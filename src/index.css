@@ -1,0 +1,90 @@
+:root {
+  --page-background:
+    radial-gradient(circle at top left, rgba(239, 177, 93, 0.24), rgba(239, 177, 93, 0) 34%),
+    radial-gradient(circle at bottom right, rgba(200, 95, 69, 0.16), rgba(200, 95, 69, 0) 40%),
+    linear-gradient(180deg, #efe7db 0%, #f8f2ea 44%, #f4ede3 100%);
+  --bg: #f8f2ea;
+  --ink: #13263f;
+  --ink-soft: #30475f;
+  --ink-muted: #66768c;
+  --ink-faint: #92a0b0;
+  --navy: #102542;
+  --navy-2: #183959;
+  --accent: #c85f45;
+  --accent-soft: #efb15d;
+  --success: #1c745d;
+  --surface-border: rgba(16, 37, 66, 0.12);
+  --surface-border-strong: rgba(16, 37, 66, 0.22);
+  --shadow-sm: 0 12px 28px rgba(16, 37, 66, 0.08);
+  --shadow-md: 0 20px 48px rgba(16, 37, 66, 0.12);
+  --shadow-lg: 0 28px 74px rgba(16, 37, 66, 0.16);
+  --font-body: 'Avenir Next', 'Helvetica Neue', 'Segoe UI', sans-serif;
+  --font-display: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
+
+  color: var(--ink);
+  background: var(--page-background);
+  font-family: var(--font-body);
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--page-background);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  background: none;
+}
+
+a {
+  color: inherit;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+#root {
+  min-height: 100svh;
+}
+
+::selection {
+  background: rgba(200, 95, 69, 0.18);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
