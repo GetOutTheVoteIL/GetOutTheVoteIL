@@ -184,9 +184,9 @@ function getMapUrl(latitude, longitude, state) {
 function App() {
   const mobileDevice = typeof navigator !== 'undefined' && isMobileDevice()
   const iosDevice = typeof navigator !== 'undefined' && isIosDevice()
+  const statewideInfoLink = electionConfig.statewideLinks[0]
 
   const [now, setNow] = useState(() => new Date())
-  const [selectedJurisdiction, setSelectedJurisdiction] = useState('chicago')
   const [shareMode, setShareMode] = useState(() =>
     mobileDevice ? SHARE_MODES.SMS : SHARE_MODES.EMAIL,
   )
@@ -219,15 +219,17 @@ function App() {
     let cancelled = false
 
     async function loadContactPickerCapabilities() {
-      if (
-        typeof navigator === 'undefined' ||
-        typeof navigator.contacts?.select !== 'function' ||
-        typeof navigator.contacts.getProperties !== 'function'
-      ) {
+      if (typeof navigator === 'undefined' || typeof navigator.contacts?.select !== 'function') {
+        setPickerSupportsAddress(false)
         return
       }
 
       try {
+        if (typeof navigator.contacts.getProperties !== 'function') {
+          setPickerSupportsAddress(false)
+          return
+        }
+
         const properties = await navigator.contacts.getProperties()
 
         if (!cancelled) {
@@ -260,7 +262,6 @@ function App() {
   const isActionable = electionState !== ELECTION_STATES.TOO_LATE
   const isInformationalOnly = electionState === ELECTION_STATES.TOO_LATE
   const chicagoNow = formatChicagoNow(now)
-  const jurisdiction = electionConfig.jurisdictions[selectedJurisdiction]
   const canUseContactPicker =
     isActionable &&
     typeof navigator !== 'undefined' &&
@@ -559,7 +560,7 @@ function App() {
     }
 
     if (!navigator.geolocation) {
-      setLocationFeedback('Use the official links below if location is unavailable.')
+      setLocationFeedback('Use Vote.gov Illinois if location is unavailable.')
       return
     }
 
@@ -579,7 +580,7 @@ function App() {
       },
       () => {
         setIsLocating(false)
-        setLocationFeedback('Location was blocked. Use the official links below.')
+        setLocationFeedback('Location was blocked. Use Vote.gov Illinois if needed.')
       },
       {
         enableHighAccuracy: true,
@@ -624,8 +625,13 @@ function App() {
                   </a>
                 </>
               ) : (
-                <a className="button button-primary" href="#official">
-                  Official links
+                <a
+                  className="button button-primary"
+                  href={statewideInfoLink.href}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Vote.gov Illinois
                 </a>
               )}
             </div>
@@ -720,9 +726,11 @@ function App() {
                       id="contact-entry"
                       className="paste-input"
                       rows="3"
-                      autoComplete="off"
+                      autoComplete={shareMode === SHARE_MODES.SMS ? 'tel' : 'email'}
                       autoCapitalize="off"
                       autoCorrect="off"
+                      inputMode={shareMode === SHARE_MODES.SMS ? 'tel' : 'email'}
+                      enterKeyHint="done"
                       value={contactInput}
                       onChange={(event) => setContactInput(event.target.value)}
                       placeholder={getModePlaceholder(shareMode)}
@@ -816,62 +824,22 @@ function App() {
               <div className="section-head">
                 <p className="panel-kicker">Challenge closed</p>
                 <h2>Voting is over.</h2>
-                <p>Use the official links below for what is next.</p>
+                <p>Use Vote.gov Illinois for official info.</p>
               </div>
             </article>
           )}
-
-          <article className="surface official-card" id="official">
-            <div className="section-head">
-              <p className="panel-kicker">Official links</p>
-              <h2>Pick your area.</h2>
-              <p>{stateContent.guidance}</p>
-            </div>
-
-            <div className="jurisdiction-tabs" role="tablist" aria-label="Choose your voting area">
-              {Object.entries(electionConfig.jurisdictions).map(([key, area]) => (
-                <button
-                  key={key}
-                  className={`tab-button ${selectedJurisdiction === key ? 'is-active' : ''}`}
-                  type="button"
-                  onClick={() => setSelectedJurisdiction(key)}
-                  aria-pressed={selectedJurisdiction === key}
-                >
-                  {area.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="link-stack">
-              {jurisdiction.links.map((link) => (
-                <a
-                  className="link-card"
-                  href={link.href}
-                  key={link.href}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <strong>{link.label}</strong>
-                  <span>{jurisdiction.region}</span>
-                </a>
-              ))}
-            </div>
-
-            <div className="statewide-row">
-              {electionConfig.statewideLinks.map((link) => (
-                <a
-                  className="statewide-link"
-                  href={link.href}
-                  key={link.href}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {link.label}
-                </a>
-              ))}
-            </div>
-          </article>
         </section>
+
+        <footer className="page-footer">
+          <a
+            className="footer-link"
+            href={statewideInfoLink.href}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Official Illinois voter info: {statewideInfoLink.label}
+          </a>
+        </footer>
       </main>
     </div>
   )

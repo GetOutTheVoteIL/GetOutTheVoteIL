@@ -266,7 +266,7 @@
 
 .content-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+  grid-template-columns: 1fr;
   gap: 18px;
   align-items: start;
 }
@@ -552,6 +552,24 @@
 .link-card span,
 .inline-resource span {
   color: var(--ink-muted);
+}
+
+.page-footer {
+  display: flex;
+  justify-content: center;
+  padding: 2px 6px 12px;
+}
+
+.footer-link {
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.footer-link:hover,
+.footer-link:focus-visible {
+  color: var(--ink);
+  text-decoration: underline;
 }
 
 .visually-hidden {
