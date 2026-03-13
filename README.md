@@ -27,6 +27,11 @@ npm run build
 npm run preview
 ```
 
+## GitHub Pages
+
+Pushes to `main` build and deploy the site through GitHub Actions Pages.
+If Pages is still pointed at a branch in repo settings, switch it to `GitHub Actions`.
+
 ## Notes
 
 - Election timing is currently configured for the March 17, 2026 Illinois General Primary.
