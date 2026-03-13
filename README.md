@@ -2,7 +2,7 @@
 
 Time-aware IL-9 voting relay built with React and Vite.
 
-The site is designed for mobile-first voter outreach. It changes its messaging based on Chicago time, points users to official Chicago, suburban Cook, and Lake County election resources, and uses compact local-only relay tokens instead of a server-side contact database.
+The site is designed for mobile-first voter outreach. It changes its messaging based on Chicago time, points users to official Chicago, suburban Cook, and Lake County election resources.
 
 ## Highlights
 
