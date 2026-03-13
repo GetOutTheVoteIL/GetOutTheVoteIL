@@ -4,7 +4,6 @@ import {
   ELECTION_STATES,
   PARTICIPATION_PROMPT,
   buildShareMessage,
-  buildShareSubject,
   deriveElectionState,
   electionConfig,
   formatChicagoNow,
@@ -13,20 +12,24 @@ import {
 } from './lib/election'
 import { getPickedContactName, isLikelyIl9Contact } from './lib/locality'
 import {
-  buildRelayUrl,
-  contactToToken,
   copyTextToClipboard,
-  decodeTokenChain,
-  decodeLegacyTokenChain,
   maskContact,
   normalizeContact,
 } from './lib/relay'
 
 const MIN_CONTACT_TARGET = 3
 const CONTACT_SPLIT_PATTERN = /[\n,;]+/
+const RELAY_METHODS = {
+  SMS: 'sms',
+  WHATSAPP: 'whatsapp',
+}
 
 function isIosDevice() {
   return /iphone|ipad|ipod/i.test(navigator.userAgent)
+}
+
+function isMobileDevice() {
+  return /android|iphone|ipad|ipod/i.test(navigator.userAgent)
 }
 
 function openExternalUrl(url, preferSameWindow = false) {
@@ -47,7 +50,7 @@ function splitContactInput(value) {
 
 function getContactMessage(result) {
   if (result.added === 0 && result.invalid > 0) {
-    return 'Use phones or emails only.'
+    return 'Use phone numbers only.'
   }
 
   if (result.added > 0) {
@@ -85,9 +88,9 @@ function App() {
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState('')
   const [contacts, setContacts] = useState([])
   const [contactInput, setContactInput] = useState('')
-  const [priorTokens, setPriorTokens] = useState([])
   const [inputFeedback, setInputFeedback] = useState('')
   const [shareFeedback, setShareFeedback] = useState('')
+  const [activeRelayMethod, setActiveRelayMethod] = useState(null)
   const [locationFeedback, setLocationFeedback] = useState('')
   const [isLocating, setIsLocating] = useState(false)
   const [isPickingContacts, setIsPickingContacts] = useState(false)
@@ -100,26 +103,6 @@ function App() {
 
     return () => {
       window.clearInterval(intervalId)
-    }
-  }, [])
-
-  useEffect(() => {
-    const currentUrl = new URL(window.location.href)
-    const encodedHash = currentUrl.hash.startsWith('#') ? currentUrl.hash.slice(1) : ''
-    const encodedTokens = currentUrl.searchParams.get('c')
-    const incomingTokens = encodedHash
-      ? decodeTokenChain(encodedHash)
-      : decodeLegacyTokenChain(encodedTokens || '')
-
-    if (incomingTokens.length > 0) {
-      setPriorTokens(incomingTokens)
-    }
-
-    if (encodedHash || encodedTokens) {
-      currentUrl.searchParams.delete('c')
-      currentUrl.hash = ''
-      const cleanPath = `${currentUrl.pathname}${currentUrl.search}`
-      window.history.replaceState({}, '', cleanPath || currentUrl.pathname)
     }
   }, [])
 
@@ -175,15 +158,18 @@ function App() {
   const isInformationalOnly = electionState === ELECTION_STATES.TOO_LATE
   const chicagoNow = formatChicagoNow(now)
   const jurisdiction = electionConfig.jurisdictions[selectedJurisdiction]
-  const canUseNativeShare =
-    isActionable &&
-    typeof navigator !== 'undefined' &&
-    typeof navigator.share === 'function'
   const canUseContactPicker =
     isActionable &&
     typeof navigator !== 'undefined' &&
     typeof navigator.contacts?.select === 'function'
-  const shareUnlocked = isActionable && contacts.length >= MIN_CONTACT_TARGET
+  const canUseNativeShare =
+    isActionable &&
+    typeof navigator !== 'undefined' &&
+    typeof navigator.share === 'function'
+  const mobileDevice = typeof navigator !== 'undefined' && isMobileDevice()
+  const relayMode = activeRelayMethod !== null
+  const relayReady = contacts.length >= MIN_CONTACT_TARGET
+  const shareUnlocked = isActionable && (!relayMode || relayReady)
   const remainingContacts = Math.max(0, MIN_CONTACT_TARGET - contacts.length)
   const baseShareUrl = `${window.location.origin}${window.location.pathname}`
   const sharePreview = buildShareMessage(electionState)
@@ -198,6 +184,7 @@ function App() {
     setContactInput('')
     setInputFeedback('')
     setShareFeedback('')
+    setActiveRelayMethod(null)
     setLocationFeedback('')
     setIsLocating(false)
     setIsPickingContacts(false)
@@ -205,13 +192,9 @@ function App() {
 
   async function addContacts(rawEntries) {
     const nextContacts = [...contacts]
-    const knownTokens = new Set([
-      ...priorTokens,
-      ...contacts.map((contact) => contact.token),
-    ])
+    const knownValues = new Set(contacts.map((contact) => contact.value))
     const result = {
       added: 0,
-      duplicates: 0,
       invalid: 0,
     }
 
@@ -224,25 +207,22 @@ function App() {
 
         const normalized = normalizeContact(detail.raw)
 
-        if (!normalized) {
+        if (!normalized || normalized.kind !== 'phone') {
           result.invalid += 1
           continue
         }
 
-        const token = await contactToToken(normalized.value)
-
-        if (knownTokens.has(token)) {
-          result.duplicates += 1
+        if (knownValues.has(normalized.value)) {
           continue
         }
 
-        knownTokens.add(token)
+        knownValues.add(normalized.value)
         nextContacts.push({
           kind: normalized.kind,
           locality: detail.locality || 'unknown',
           masked: maskContact(normalized.value, normalized.kind),
           name: detail.name || '',
-          token,
+          value: normalized.value,
         })
         result.added += 1
       }
@@ -266,7 +246,7 @@ function App() {
     const rawEntries = splitContactInput(contactInput)
 
     if (rawEntries.length === 0) {
-      setInputFeedback('Paste or type at least 3 phones or emails.')
+      setInputFeedback('Paste or type at least 3 phone numbers.')
       return
     }
 
@@ -286,7 +266,7 @@ function App() {
     setInputFeedback('')
 
     try {
-      const properties = ['name', 'tel', 'email']
+      const properties = ['name', 'tel']
 
       if (pickerSupportsAddress) {
         properties.push('address')
@@ -299,7 +279,7 @@ function App() {
       const entries = []
 
       selectedContacts.forEach((contact) => {
-        const candidates = [...(contact.tel || []), ...(contact.email || [])].filter(Boolean)
+        const candidates = [...(contact.tel || [])].filter(Boolean)
 
         if (candidates.length === 0) {
           return
@@ -315,7 +295,7 @@ function App() {
       })
 
       if (entries.length === 0) {
-        setInputFeedback('No phone numbers or emails came back from that pick.')
+        setInputFeedback('No phone numbers came back from that pick.')
       } else {
         await addContacts(entries)
       }
@@ -328,8 +308,8 @@ function App() {
     }
   }
 
-  function handleRemoveContact(token) {
-    setContacts(sortContactsByLocality(contacts.filter((contact) => contact.token !== token)))
+  function handleRemoveContact(value) {
+    setContacts(sortContactsByLocality(contacts.filter((contact) => contact.value !== value)))
   }
 
   function handlePhotoChange(event) {
@@ -341,42 +321,35 @@ function App() {
     setPhotoFile(null)
   }
 
-  function finalizeShare(nextTokens, nextMessage) {
-    setPriorTokens(nextTokens)
+  function finalizeRelayShare(nextMessage) {
     setContacts([])
     setContactInput('')
     setInputFeedback('')
     setShareFeedback(nextMessage)
+    setActiveRelayMethod(null)
+  }
+
+  function finalizeSimpleShare(nextMessage) {
+    setShareFeedback(nextMessage)
   }
 
   function getShareArtifacts() {
-    const snapshot = buildRelayUrl(
-      baseShareUrl,
-      priorTokens,
-      contacts.map((contact) => contact.token),
-    )
     const publicText = `${buildShareMessage(electionState)}\n\n${baseShareUrl}`
 
     return {
-      chainTokens: snapshot.tokens,
-      relayShareUrl: snapshot.shareUrl,
-      publicShareUrl: baseShareUrl,
       publicText,
       textWithoutLink: buildShareMessage(electionState),
     }
   }
 
   async function handleNativeShare() {
-    if (!shareUnlocked) {
-      setShareFeedback('Add at least 3 people first.')
-      return
-    }
-
+    setActiveRelayMethod(null)
+    setInputFeedback('')
     const shareArtifacts = getShareArtifacts()
     const sharePayload = {
       title: 'The IL-9 Vote Challenge',
       text: shareArtifacts.textWithoutLink,
-      url: shareArtifacts.relayShareUrl,
+      url: baseShareUrl,
     }
 
     if (photoFile && typeof navigator.canShare === 'function') {
@@ -391,7 +364,7 @@ function App() {
 
     try {
       await navigator.share(sharePayload)
-      finalizeShare(shareArtifacts.chainTokens, 'Share sheet ready.')
+      finalizeSimpleShare('Share sheet ready.')
     } catch (error) {
       if (error?.name !== 'AbortError') {
         setShareFeedback('Native share did not finish.')
@@ -399,35 +372,37 @@ function App() {
     }
   }
 
+  function activateRelayMethod(method) {
+    setActiveRelayMethod(method)
+    setInputFeedback('')
+    setShareFeedback('')
+
+    if (contacts.length === 0 && canUseContactPicker && mobileDevice) {
+      void handleContactPicker()
+    }
+  }
+
   function handleSmsShare() {
-    if (!shareUnlocked) {
+    activateRelayMethod(RELAY_METHODS.SMS)
+
+    if (!relayReady) {
       setShareFeedback('Add at least 3 people first.')
       return
     }
 
     const shareArtifacts = getShareArtifacts()
+    const recipients = contacts.map((contact) => contact.value).join(',')
     const separator = isIosDevice() ? '&' : '?'
-    const smsUrl = `sms:${separator}body=${encodeURIComponent(shareArtifacts.publicText)}`
+    const smsUrl = `sms:${recipients}${separator}body=${encodeURIComponent(shareArtifacts.publicText)}`
 
-    finalizeShare(shareArtifacts.chainTokens, 'Text ready.')
+    finalizeRelayShare('Text ready.')
     openExternalUrl(smsUrl, true)
   }
 
-  function handleEmailShare() {
-    if (!shareUnlocked) {
-      setShareFeedback('Add at least 3 people first.')
-      return
-    }
-
-    const shareArtifacts = getShareArtifacts()
-    const emailUrl = `mailto:?subject=${encodeURIComponent(buildShareSubject(electionState))}&body=${encodeURIComponent(shareArtifacts.publicText)}`
-
-    finalizeShare(shareArtifacts.chainTokens, 'Email ready.')
-    openExternalUrl(emailUrl, true)
-  }
-
   function handleWhatsAppShare() {
-    if (!shareUnlocked) {
+    activateRelayMethod(RELAY_METHODS.WHATSAPP)
+
+    if (!relayReady) {
       setShareFeedback('Add at least 3 people first.')
       return
     }
@@ -435,21 +410,42 @@ function App() {
     const shareArtifacts = getShareArtifacts()
     const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareArtifacts.publicText)}`
 
-    finalizeShare(shareArtifacts.chainTokens, 'WhatsApp ready.')
+    finalizeRelayShare('WhatsApp ready.')
     openExternalUrl(whatsappUrl)
   }
 
-  async function handleCopyShare() {
-    if (!shareUnlocked) {
-      setShareFeedback('Add at least 3 people first.')
-      return
-    }
+  function handleFacebookShare() {
+    setActiveRelayMethod(null)
+    setInputFeedback('')
+    const facebookUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(baseShareUrl)}`
 
+    finalizeSimpleShare('Facebook opened.')
+    openExternalUrl(facebookUrl)
+  }
+
+  async function handleInstagramShare() {
+    setActiveRelayMethod(null)
+    setInputFeedback('')
     const shareArtifacts = getShareArtifacts()
 
     try {
       await copyTextToClipboard(shareArtifacts.publicText)
-      finalizeShare(shareArtifacts.chainTokens, 'Copied. Send it.')
+      finalizeSimpleShare('Caption copied. Instagram opened.')
+    } catch {
+      finalizeSimpleShare('Instagram opened.')
+    }
+
+    openExternalUrl('https://www.instagram.com/')
+  }
+
+  async function handleCopyShare() {
+    setActiveRelayMethod(null)
+    setInputFeedback('')
+    const shareArtifacts = getShareArtifacts()
+
+    try {
+      await copyTextToClipboard(shareArtifacts.publicText)
+      finalizeSimpleShare('Copied. Send it.')
     } catch {
       setShareFeedback('Copy failed on this browser.')
     }
@@ -601,170 +597,181 @@ function App() {
                 </div>
               </div>
 
-              <form className="contact-form" onSubmit={handleManualAdd}>
-                <label className="visually-hidden" htmlFor="contact-entry">
-                  Add phone numbers or email addresses
-                </label>
-                <textarea
-                  id="contact-entry"
-                  className="paste-input"
-                  rows="3"
-                  autoComplete="off"
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  value={contactInput}
-                  onChange={(event) => setContactInput(event.target.value)}
-                  placeholder={'Paste 3+ phones or emails\nOne per line, comma, or semicolon'}
-                />
-                <button className="button button-primary" type="submit">
-                  Add people
-                </button>
-              </form>
-
-              <div className="picker-row">
-                {canUseContactPicker && (
-                  <button
-                    className="button button-ghost"
-                    type="button"
-                    onClick={handleContactPicker}
-                    disabled={isPickingContacts}
-                  >
-                    {isPickingContacts ? 'Opening…' : 'Pick contacts'}
-                  </button>
-                )}
-              </div>
-
-              <div className="challenge-progress">
-                <span className={`count-pill ${shareUnlocked ? 'is-ready' : ''}`}>
-                  {shareUnlocked ? `${contacts.length} picked` : `${contacts.length}/${MIN_CONTACT_TARGET}`}
-                </span>
-                <span className="progress-text">
-                  {shareUnlocked ? 'Ready to share' : `Add ${remainingContacts} more`}
-                </span>
-              </div>
-
-              {inputFeedback && <p className="inline-note">{inputFeedback}</p>}
-
-              <ul className="contact-list">
-                {contacts.length === 0 ? (
-                  <li className="empty-state">No people yet. Paste a few and go.</li>
-                ) : (
-                  contacts.map((contact) => (
-                    <li className="contact-item" key={contact.token}>
-                      <div className="contact-copy">
-                        <div className="contact-line">
-                          {contact.name && <strong>{contact.name}</strong>}
-                          {contact.locality === 'local' && (
-                            <span className="contact-flag">IL-9</span>
-                          )}
-                        </div>
-                        <span>{contact.masked}</span>
-                      </div>
-                      <button
-                        className="button button-inline"
-                        type="button"
-                        onClick={() => handleRemoveContact(contact.token)}
-                      >
-                        Remove
-                      </button>
-                    </li>
-                  ))
-                )}
-              </ul>
-
               <div className="share-panel">
                 <div className="share-head">
                   <p className="panel-kicker">Share</p>
                   <span className={`count-pill ${shareUnlocked ? 'is-ready' : ''}`}>
-                    {shareUnlocked ? 'Go' : 'Need 3+'}
+                    {relayMode ? (relayReady ? 'Ready' : 'Need 3+') : 'Pick one'}
                   </span>
                 </div>
 
                 <p className="share-preview">{sharePreview}</p>
 
-                {canUseNativeShare ? (
-                  <>
-                    <div className="share-actions">
+                <div className="share-actions">
+                  {mobileDevice ? (
+                    <>
+                      {canUseNativeShare && (
+                        <button
+                          className="button button-primary"
+                          type="button"
+                          onClick={handleNativeShare}
+                        >
+                          Share
+                        </button>
+                      )}
                       <button
-                        className="button button-primary"
+                        className={`button ${activeRelayMethod === RELAY_METHODS.SMS ? 'button-primary' : 'button-secondary'}`}
                         type="button"
-                        onClick={handleNativeShare}
-                        disabled={!shareUnlocked}
+                        onClick={() => activateRelayMethod(RELAY_METHODS.SMS)}
                       >
-                        Share
+                        Text
                       </button>
-                    </div>
-                    <details className="fallback-share">
-                      <summary>Other options</summary>
-                      <div className="share-actions fallback-actions">
-                        <button
-                          className="button button-secondary"
-                          type="button"
-                          onClick={handleSmsShare}
-                          disabled={!shareUnlocked}
-                        >
-                          Text
-                        </button>
-                        <button
-                          className="button button-secondary"
-                          type="button"
-                          onClick={handleEmailShare}
-                          disabled={!shareUnlocked}
-                        >
-                          Email
-                        </button>
-                        <button
-                          className="button button-secondary"
-                          type="button"
-                          onClick={handleWhatsAppShare}
-                          disabled={!shareUnlocked}
-                        >
-                          WhatsApp
-                        </button>
+                      <button
+                        className={`button ${activeRelayMethod === RELAY_METHODS.WHATSAPP ? 'button-primary' : 'button-secondary'}`}
+                        type="button"
+                        onClick={() => activateRelayMethod(RELAY_METHODS.WHATSAPP)}
+                      >
+                        WhatsApp
+                      </button>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={handleInstagramShare}
+                      >
+                        Instagram
+                      </button>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={handleFacebookShare}
+                      >
+                        Facebook
+                      </button>
+                      <button className="button button-ghost" type="button" onClick={handleCopyShare}>
+                        Copy
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={handleFacebookShare}
+                      >
+                        Facebook
+                      </button>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={handleInstagramShare}
+                      >
+                        Instagram
+                      </button>
+                      <button
+                        className={`button ${activeRelayMethod === RELAY_METHODS.WHATSAPP ? 'button-primary' : 'button-secondary'}`}
+                        type="button"
+                        onClick={() => activateRelayMethod(RELAY_METHODS.WHATSAPP)}
+                      >
+                        WhatsApp
+                      </button>
+                      <button
+                        className={`button ${activeRelayMethod === RELAY_METHODS.SMS ? 'button-primary' : 'button-secondary'}`}
+                        type="button"
+                        onClick={() => activateRelayMethod(RELAY_METHODS.SMS)}
+                      >
+                        Text
+                      </button>
+                      <button className="button button-ghost" type="button" onClick={handleCopyShare}>
+                        Copy
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {relayMode && (
+                  <div className="relay-panel">
+                    <form className="contact-form" onSubmit={handleManualAdd}>
+                      <label className="visually-hidden" htmlFor="contact-entry">
+                        Add phone numbers
+                      </label>
+                      <textarea
+                        id="contact-entry"
+                        className="paste-input"
+                        rows="3"
+                        autoComplete="off"
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        value={contactInput}
+                        onChange={(event) => setContactInput(event.target.value)}
+                        placeholder={'Paste 3+ phone numbers\nOne per line, comma, or semicolon'}
+                      />
+                      <button className="button button-secondary" type="submit">
+                        Add numbers
+                      </button>
+                    </form>
+
+                    <div className="picker-row">
+                      {canUseContactPicker && (
                         <button
                           className="button button-ghost"
                           type="button"
-                          onClick={handleCopyShare}
-                          disabled={!shareUnlocked}
+                          onClick={handleContactPicker}
+                          disabled={isPickingContacts}
                         >
-                          Copy
+                          {isPickingContacts ? 'Opening…' : 'Search phone'}
                         </button>
-                      </div>
-                    </details>
-                  </>
-                ) : (
-                  <div className="share-actions">
+                      )}
+                    </div>
+
+                    <div className="challenge-progress">
+                      <span className={`count-pill ${relayReady ? 'is-ready' : ''}`}>
+                        {relayReady ? `${contacts.length} picked` : `${contacts.length}/${MIN_CONTACT_TARGET}`}
+                      </span>
+                      <span className="progress-text">
+                        {relayReady ? 'Ready to open' : `Add ${remainingContacts} more`}
+                      </span>
+                    </div>
+
+                    {inputFeedback && <p className="inline-note">{inputFeedback}</p>}
+
+                    <ul className="contact-list">
+                      {contacts.length === 0 ? (
+                        <li className="empty-state">No people yet. Add a few and go.</li>
+                      ) : (
+                        contacts.map((contact) => (
+                          <li className="contact-item" key={contact.value}>
+                            <div className="contact-copy">
+                              <div className="contact-line">
+                                {contact.name && <strong>{contact.name}</strong>}
+                                {contact.locality === 'local' && (
+                                  <span className="contact-flag">IL-9</span>
+                                )}
+                              </div>
+                              <span>{contact.masked}</span>
+                            </div>
+                            <button
+                              className="button button-inline"
+                              type="button"
+                              onClick={() => handleRemoveContact(contact.value)}
+                            >
+                              Remove
+                            </button>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+
                     <button
-                      className="button button-secondary"
+                      className="button button-primary"
                       type="button"
-                      onClick={handleSmsShare}
-                      disabled={!shareUnlocked}
+                      onClick={
+                        activeRelayMethod === RELAY_METHODS.SMS
+                          ? handleSmsShare
+                          : handleWhatsAppShare
+                      }
+                      disabled={!relayReady}
                     >
-                      Text
-                    </button>
-                    <button
-                      className="button button-secondary"
-                      type="button"
-                      onClick={handleEmailShare}
-                      disabled={!shareUnlocked}
-                    >
-                      Email
-                    </button>
-                    <button
-                      className="button button-secondary"
-                      type="button"
-                      onClick={handleWhatsAppShare}
-                      disabled={!shareUnlocked}
-                    >
-                      WhatsApp
-                    </button>
-                    <button
-                      className="button button-ghost"
-                      type="button"
-                      onClick={handleCopyShare}
-                      disabled={!shareUnlocked}
-                    >
-                      Copy
+                      {activeRelayMethod === RELAY_METHODS.SMS ? 'Open text' : 'Open WhatsApp'}
                     </button>
                   </div>
                 )}

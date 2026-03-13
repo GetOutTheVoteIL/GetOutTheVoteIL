@@ -186,19 +186,6 @@ export function buildShareMessage(state, config = electionConfig) {
   }
 }
 
-export function buildShareSubject(state) {
-  switch (state) {
-    case ELECTION_STATES.ELECTION_DAY_BEFORE_OPEN:
-    case ELECTION_STATES.ELECTION_DAY_OPEN:
-      return 'Your turn: vote today'
-    case ELECTION_STATES.TOO_LATE:
-      return 'IL-9 voter info'
-    case ELECTION_STATES.EARLY_VOTING_OPEN:
-    default:
-      return 'Your turn: The IL-9 Vote Challenge'
-  }
-}
-
 export function getStateContent(state, config = electionConfig) {
   switch (state) {
     case ELECTION_STATES.ELECTION_DAY_BEFORE_OPEN:
