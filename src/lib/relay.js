@@ -1,3 +1,4 @@
+export const TOKEN_BYTES = 8
 export const TOKEN_LENGTH = 11
 export const MAX_SHARE_URL_LENGTH = 1800
 
@@ -79,6 +80,26 @@ function bytesToBase64Url(bytes) {
     .replace(/=+$/g, '')
 }
 
+function base64UrlToBytes(value) {
+  if (!value) {
+    return new Uint8Array()
+  }
+
+  const paddedValue = value
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .padEnd(Math.ceil(value.length / 4) * 4, '=')
+
+  const binary = atob(paddedValue)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  return bytes
+}
+
 export async function contactToToken(canonicalContact) {
   if (!globalThis.crypto?.subtle) {
     throw new Error('Secure hashing is unavailable in this browser context.')
@@ -89,10 +110,67 @@ export async function contactToToken(canonicalContact) {
     contactEncoder.encode(canonicalContact),
   )
 
-  return bytesToBase64Url(new Uint8Array(digest).slice(0, 8))
+  return bytesToBase64Url(new Uint8Array(digest).slice(0, TOKEN_BYTES))
+}
+
+function tokenToBytes(token) {
+  const bytes = base64UrlToBytes(token)
+
+  if (bytes.length !== TOKEN_BYTES) {
+    return null
+  }
+
+  return bytes
+}
+
+function getPackedChainLength(tokenCount) {
+  if (tokenCount <= 0) {
+    return 0
+  }
+
+  return Math.ceil((tokenCount * TOKEN_BYTES * 4) / 3)
+}
+
+function packTokenChain(tokens = []) {
+  if (tokens.length === 0) {
+    return ''
+  }
+
+  const byteGroups = tokens
+    .map((token) => tokenToBytes(token))
+    .filter((bytes) => bytes && bytes.length === TOKEN_BYTES)
+
+  if (byteGroups.length === 0) {
+    return ''
+  }
+
+  const combined = new Uint8Array(byteGroups.length * TOKEN_BYTES)
+
+  byteGroups.forEach((bytes, index) => {
+    combined.set(bytes, index * TOKEN_BYTES)
+  })
+
+  return bytesToBase64Url(combined)
 }
 
 export function decodeTokenChain(rawValue = '') {
+  if (!rawValue) {
+    return []
+  }
+
+  const cleanValue = rawValue.trim()
+  const bytes = base64UrlToBytes(cleanValue)
+  const tokens = []
+  const usableLength = bytes.length - (bytes.length % TOKEN_BYTES)
+
+  for (let index = 0; index < usableLength; index += TOKEN_BYTES) {
+    tokens.push(bytesToBase64Url(bytes.slice(index, index + TOKEN_BYTES)))
+  }
+
+  return tokens
+}
+
+export function decodeLegacyTokenChain(rawValue = '') {
   if (!rawValue) {
     return []
   }
@@ -108,10 +186,19 @@ export function decodeTokenChain(rawValue = '') {
 }
 
 export function getRelayCapacity(baseUrl) {
-  return Math.max(
-    0,
-    Math.floor((MAX_SHARE_URL_LENGTH - `${baseUrl}?c=`.length) / TOKEN_LENGTH),
-  )
+  const availableCharacters = MAX_SHARE_URL_LENGTH - `${baseUrl}#`.length
+
+  if (availableCharacters <= 0) {
+    return 0
+  }
+
+  let capacity = Math.floor((availableCharacters * 3) / (4 * TOKEN_BYTES))
+
+  while (capacity > 0 && getPackedChainLength(capacity) > availableCharacters) {
+    capacity -= 1
+  }
+
+  return capacity
 }
 
 export function buildRelayUrl(baseUrl, priorTokens = [], nextTokens = []) {
@@ -127,9 +214,8 @@ export function buildRelayUrl(baseUrl, priorTokens = [], nextTokens = []) {
 
   const capacity = getRelayCapacity(baseUrl)
   const trimmedTokens = capacity > 0 ? combinedTokens.slice(-capacity) : []
-  const shareUrl = trimmedTokens.length
-    ? `${baseUrl}?c=${trimmedTokens.join('')}`
-    : baseUrl
+  const packedTokens = packTokenChain(trimmedTokens)
+  const shareUrl = packedTokens ? `${baseUrl}#${packedTokens}` : baseUrl
 
   return {
     capacity,

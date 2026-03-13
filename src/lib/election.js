@@ -1,5 +1,5 @@
 export const PARTICIPATION_PROMPT =
-  'If you already voted, post your voting photo, your sticker, or a thumbs-up selfie.'
+  'Already voted? A sticker pic or thumbs-up selfie counts.'
 
 export const ELECTION_STATES = {
   EARLY_VOTING_OPEN: 'early_voting_open',
@@ -172,23 +172,30 @@ export function formatChicagoNow(date = new Date()) {
   return `${chicagoNowFormatter.format(date)} CT`
 }
 
-export function buildShareMessage(
-  state,
-  shareUrl = '',
-  config = electionConfig,
-) {
-  const linkSentence = shareUrl ? ` ${shareUrl}` : ''
-
+export function buildShareMessage(state, config = electionConfig) {
   switch (state) {
     case ELECTION_STATES.ELECTION_DAY_BEFORE_OPEN:
-      return `Election Day is today. Polls open this morning and close at ${config.pollCloseLabel}. ${PARTICIPATION_PROMPT}${shareUrl ? ` Make your plan here:${linkSentence}` : ''}`.trim()
+      return `The IL-9 Vote Challenge is live: vote today, post a pic, and challenge friends before ${config.pollCloseLabel}. ${PARTICIPATION_PROMPT}`.trim()
     case ELECTION_STATES.ELECTION_DAY_OPEN:
-      return `Election Day is today. Vote before ${config.pollCloseLabel}. ${PARTICIPATION_PROMPT}${shareUrl ? ` Then send this to 3 people who still can:${linkSentence}` : ''}`.trim()
+      return `The IL-9 Vote Challenge is live: vote before ${config.pollCloseLabel}, post a pic, and challenge friends. ${PARTICIPATION_PROMPT}`.trim()
     case ELECTION_STATES.TOO_LATE:
-      return `Voting for this election has ended.${shareUrl ? ` Stay ready for the next one with official IL-9 voter info here:${linkSentence}` : ''}`.trim()
+      return 'Voting for this election has ended.'
     case ELECTION_STATES.EARLY_VOTING_OPEN:
     default:
-      return `Early voting is open now through ${config.earlyVotingEndLabel}. I'm getting 3 people to make a plan before ${config.electionDateLabel}. ${PARTICIPATION_PROMPT}${shareUrl ? ` Check your site here:${linkSentence}` : ''}`.trim()
+      return `The IL-9 Vote Challenge is live: vote early by ${config.earlyVotingEndLabel}, post a pic, and challenge friends. ${PARTICIPATION_PROMPT}`.trim()
+  }
+}
+
+export function buildShareSubject(state) {
+  switch (state) {
+    case ELECTION_STATES.ELECTION_DAY_BEFORE_OPEN:
+    case ELECTION_STATES.ELECTION_DAY_OPEN:
+      return 'Your turn: vote today'
+    case ELECTION_STATES.TOO_LATE:
+      return 'IL-9 voter info'
+    case ELECTION_STATES.EARLY_VOTING_OPEN:
+    default:
+      return 'Your turn: The IL-9 Vote Challenge'
   }
 }
 
@@ -196,62 +203,57 @@ export function getStateContent(state, config = electionConfig) {
   switch (state) {
     case ELECTION_STATES.ELECTION_DAY_BEFORE_OPEN:
       return {
-        badge: 'Today is Election Day',
-        headline: 'Election Day is today. Polls open this morning.',
-        lead:
-          'Your move is simple: confirm your site, get ready to vote, and text 3 people before the day slips away.',
+        badge: 'Polls open today',
+        headline: 'Election Day. Polls open this morning.',
+        lead: 'Vote. Snap a pic. Challenge friends.',
         mapQuery: 'polling place',
-        mapButtonLabel: 'Find my polling place',
+        mapButtonLabel: 'Find my spot',
         statusCards: [
           {
-            label: 'Poll hours',
-            value: config.pollHoursLabel,
+            label: 'Today',
+            value: `Polls: ${config.pollHoursLabel}`,
           },
           {
-            label: 'Registration',
-            value: 'Grace-period registration is still available through official local processes.',
+            label: 'Still okay',
+            value: 'Grace registration is still available.',
           },
           {
-            label: 'Mail ballots',
-            value: `Applications closed ${config.mailBallotClosedLabel}.`,
+            label: 'Mail ballot',
+            value: `Application deadline passed ${config.mailBallotClosedLabel}.`,
           },
         ],
-        guidance:
-          'Use your local election page for the exact site, ballot, and registration details you need this morning.',
+        guidance: 'Use the official links below for the exact site and rules.',
       }
     case ELECTION_STATES.ELECTION_DAY_OPEN:
       return {
-        badge: 'Polls are open now',
-        headline: 'Election Day is today. Vote before 7:00 p.m.',
-        lead:
-          'This is the live voting window. Vote now, post your proof, and push 3 more people to act while polls are open.',
+        badge: 'Polls are open',
+        headline: 'Vote today before 7:00 p.m.',
+        lead: 'Vote. Snap a pic. Challenge friends.',
         mapQuery: 'polling place',
-        mapButtonLabel: 'Find my polling place',
+        mapButtonLabel: 'Find my spot',
         statusCards: [
           {
             label: 'Right now',
-            value: `Polls are open until ${config.pollCloseLabel}.`,
+            value: `Open until ${config.pollCloseLabel}.`,
           },
           {
-            label: 'Early voting',
+            label: 'Early vote',
             value: 'Early voting ended Monday, March 16.',
           },
           {
-            label: 'Registration',
-            value: 'Grace-period registration remains available through official local processes.',
+            label: 'Still okay',
+            value: 'Grace registration is still available.',
           },
         ],
-        guidance:
-          'Open your official local voter page now to confirm the exact site and any same-day registration instructions.',
+        guidance: 'Use the official links below for the exact site and rules.',
       }
     case ELECTION_STATES.TOO_LATE:
       return {
-        badge: 'This election is closed',
-        headline: 'Voting for this election has ended.',
-        lead:
-          'The vote-now relay is off. Use the official links below to confirm results, keep your registration current, and stay ready for the next election.',
+        badge: 'This round is over',
+        headline: 'Voting is closed.',
+        lead: 'Official info only from here.',
         mapQuery: 'board of elections office',
-        mapButtonLabel: 'Official voter resources',
+        mapButtonLabel: 'Official voter info',
         statusCards: [
           {
             label: 'Closed',
@@ -266,34 +268,31 @@ export function getStateContent(state, config = electionConfig) {
             value: 'Use official registration and voter lookup tools for the next election.',
           },
         ],
-        guidance:
-          'This page stops challenge sharing automatically after the close of polls so it never tells people to vote too late.',
+        guidance: 'The challenge shuts off after polls close.',
       }
     case ELECTION_STATES.EARLY_VOTING_OPEN:
     default:
       return {
         badge: 'Early voting is open',
-        headline: 'Early voting is open now. Election Day is Tuesday, March 17.',
-        lead:
-          'Make your plan now, use an official site to confirm where to go, and challenge 3 people while there is still time to act.',
+        headline: 'Vote early now. Election Day is Tuesday, March 17.',
+        lead: 'Vote. Snap a pic. Challenge friends.',
         mapQuery: 'early voting',
-        mapButtonLabel: 'Find early voting near me',
+        mapButtonLabel: 'Find early voting',
         statusCards: [
           {
-            label: 'Window',
-            value: `Early voting runs ${config.earlyVotingDateLabel}.`,
+            label: 'Vote early',
+            value: `Through ${config.earlyVotingEndLabel}.`,
           },
           {
             label: 'Election Day',
-            value: `${config.electionDateLabel} from ${config.pollHoursLabel}.`,
+            value: `${config.electionDateLabel}.`,
           },
           {
-            label: 'Registration',
-            value: 'Online registration has closed, but local grace-period options remain available.',
+            label: 'Still okay',
+            value: 'Grace registration is still available.',
           },
         ],
-        guidance:
-          'Use the official local links below to confirm an early voting site, registration status, and ballot details before you share.',
+        guidance: 'Use the official links below for the exact site and rules.',
       }
   }
 }
