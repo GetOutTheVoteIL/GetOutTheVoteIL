@@ -2,15 +2,15 @@
 
 Time-aware IL-9 vote challenge built with React and Vite.
 
-The site is designed for mobile-first voter outreach. It changes its messaging based on Chicago time, points users to official Chicago, suburban Cook, and Lake County election resources.
+The site is designed for fast voter outreach. It changes its messaging based on Chicago time, points users to official Chicago, suburban Cook, and Lake County election resources, and opens either a multi-recipient text or a BCC email with locally saved contacts.
 
 ## Highlights
 
 - Time-aware states for early voting, Election Day, and post-close info mode
 - Official voter-information links for Chicago, suburban Cook, and Lake County
-- Device-aware sharing with Web Share, Text, WhatsApp, Facebook, Instagram, and copy flows
-- Optional photo sharing for voting photos, sticker photos, or thumbs-up selfies
-- Local-only contact picking for Text and WhatsApp
+- Email and Text only, with BCC email and multi-recipient text flows
+- Local-only contact picking plus local persistence for saved phone numbers and email addresses
+- Picked contacts without the chosen channel can be routed into the other channel
 - No backend required
 
 ## Development

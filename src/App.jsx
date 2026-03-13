@@ -11,18 +11,19 @@ import {
   getStateContent,
 } from './lib/election'
 import { getPickedContactName, isLikelyIl9Contact } from './lib/locality'
-import {
-  copyTextToClipboard,
-  maskContact,
-  normalizeContact,
-} from './lib/relay'
+import { copyTextToClipboard, maskContact, normalizeContact } from './lib/relay'
 
-const MIN_CONTACT_TARGET = 3
-const CONTACT_SPLIT_PATTERN = /[\n,;]+/
-const RELAY_METHODS = {
+const SHARE_MODES = {
   SMS: 'sms',
-  WHATSAPP: 'whatsapp',
+  EMAIL: 'email',
 }
+
+const STORAGE_KEYS = {
+  sms: 'gotv-il-sms-contacts',
+  email: 'gotv-il-email-contacts',
+}
+
+const CONTACT_SPLIT_PATTERN = /[\n,;]+/
 
 function isIosDevice() {
   return /iphone|ipad|ipod/i.test(navigator.userAgent)
@@ -48,18 +49,6 @@ function splitContactInput(value) {
     .filter(Boolean)
 }
 
-function getContactMessage(result) {
-  if (result.added === 0 && result.invalid > 0) {
-    return 'Use phone numbers only.'
-  }
-
-  if (result.added > 0) {
-    return `Added ${result.added}.`
-  }
-
-  return 'No new contacts added.'
-}
-
 function sortContactsByLocality(contactList) {
   return [...contactList].sort((left, right) => {
     const leftRank = left.locality === 'local' ? 0 : 1
@@ -67,6 +56,117 @@ function sortContactsByLocality(contactList) {
 
     return leftRank - rightRank
   })
+}
+
+function buildStoredContact(normalized, detail = {}) {
+  return {
+    kind: normalized.kind,
+    locality: detail.locality || 'unknown',
+    masked: maskContact(normalized.value, normalized.kind),
+    name: detail.name || '',
+    value: normalized.value,
+  }
+}
+
+function loadStoredContacts(storageKey, expectedKind) {
+  if (typeof window === 'undefined') {
+    return []
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(storageKey)
+
+    if (!rawValue) {
+      return []
+    }
+
+    const parsedValue = JSON.parse(rawValue)
+
+    if (!Array.isArray(parsedValue)) {
+      return []
+    }
+
+    const normalizedContacts = parsedValue
+      .map((contact) => {
+        const normalized = normalizeContact(String(contact?.value || ''))
+
+        if (!normalized || normalized.kind !== expectedKind) {
+          return null
+        }
+
+        return buildStoredContact(normalized, contact)
+      })
+      .filter(Boolean)
+
+    return sortContactsByLocality(normalizedContacts)
+  } catch {
+    return []
+  }
+}
+
+function persistContacts(storageKey, contacts) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const serializableContacts = contacts.map((contact) => ({
+    kind: contact.kind,
+    locality: contact.locality,
+    name: contact.name,
+    value: contact.value,
+  }))
+
+  window.localStorage.setItem(storageKey, JSON.stringify(serializableContacts))
+}
+
+function getModeKind(mode) {
+  return mode === SHARE_MODES.SMS ? 'phone' : 'email'
+}
+
+function getModeButtonLabel(mode, iosDevice) {
+  if (mode === SHARE_MODES.SMS) {
+    return iosDevice ? 'Text / iMessage' : 'Text'
+  }
+
+  return 'Email'
+}
+
+function getModePlaceholder(mode) {
+  if (mode === SHARE_MODES.SMS) {
+    return 'Paste phone numbers\nOne per line, comma, or semicolon'
+  }
+
+  return 'Paste email addresses\nOne per line, comma, or semicolon'
+}
+
+function getModePickerLabel(mode) {
+  return mode === SHARE_MODES.SMS ? 'Search phone' : 'Search email'
+}
+
+function getModeInputLabel(mode) {
+  return mode === SHARE_MODES.SMS ? 'Add phone numbers' : 'Add email addresses'
+}
+
+function getModeEmptyState(mode) {
+  return mode === SHARE_MODES.SMS
+    ? 'No phone numbers yet. Add a few and go.'
+    : 'No emails yet. Add a few and go.'
+}
+
+function getModeInvalidMessage(mode) {
+  return mode === SHARE_MODES.SMS ? 'Use phone numbers only.' : 'Use email addresses only.'
+}
+
+function getModeOpenLabel(mode, iosDevice) {
+  if (mode === SHARE_MODES.SMS) {
+    return iosDevice ? 'Open Messages' : 'Open Text'
+  }
+
+  return 'Open Email'
+}
+
+function getAlternateMode(mode) {
+  return mode === SHARE_MODES.SMS ? SHARE_MODES.EMAIL : SHARE_MODES.SMS
 }
 
 function getMapUrl(latitude, longitude, state) {
@@ -82,19 +182,28 @@ function getMapUrl(latitude, longitude, state) {
 }
 
 function App() {
+  const mobileDevice = typeof navigator !== 'undefined' && isMobileDevice()
+  const iosDevice = typeof navigator !== 'undefined' && isIosDevice()
+
   const [now, setNow] = useState(() => new Date())
   const [selectedJurisdiction, setSelectedJurisdiction] = useState('chicago')
-  const [photoFile, setPhotoFile] = useState(null)
-  const [photoPreviewUrl, setPhotoPreviewUrl] = useState('')
-  const [contacts, setContacts] = useState([])
+  const [shareMode, setShareMode] = useState(() =>
+    mobileDevice ? SHARE_MODES.SMS : SHARE_MODES.EMAIL,
+  )
+  const [smsContacts, setSmsContacts] = useState(() =>
+    loadStoredContacts(STORAGE_KEYS.sms, 'phone'),
+  )
+  const [emailContacts, setEmailContacts] = useState(() =>
+    loadStoredContacts(STORAGE_KEYS.email, 'email'),
+  )
   const [contactInput, setContactInput] = useState('')
   const [inputFeedback, setInputFeedback] = useState('')
   const [shareFeedback, setShareFeedback] = useState('')
-  const [activeRelayMethod, setActiveRelayMethod] = useState(null)
   const [locationFeedback, setLocationFeedback] = useState('')
   const [isLocating, setIsLocating] = useState(false)
   const [isPickingContacts, setIsPickingContacts] = useState(false)
   const [pickerSupportsAddress, setPickerSupportsAddress] = useState(false)
+  const [alternatePrompt, setAlternatePrompt] = useState(null)
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -139,18 +248,12 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!photoFile) {
-      setPhotoPreviewUrl('')
-      return undefined
-    }
+    persistContacts(STORAGE_KEYS.sms, smsContacts)
+  }, [smsContacts])
 
-    const previewUrl = URL.createObjectURL(photoFile)
-    setPhotoPreviewUrl(previewUrl)
-
-    return () => {
-      URL.revokeObjectURL(previewUrl)
-    }
-  }, [photoFile])
+  useEffect(() => {
+    persistContacts(STORAGE_KEYS.email, emailContacts)
+  }, [emailContacts])
 
   const electionState = deriveElectionState(now, electionConfig)
   const stateContent = getStateContent(electionState, electionConfig)
@@ -162,15 +265,9 @@ function App() {
     isActionable &&
     typeof navigator !== 'undefined' &&
     typeof navigator.contacts?.select === 'function'
-  const canUseNativeShare =
-    isActionable &&
-    typeof navigator !== 'undefined' &&
-    typeof navigator.share === 'function'
-  const mobileDevice = typeof navigator !== 'undefined' && isMobileDevice()
-  const relayMode = activeRelayMethod !== null
-  const relayReady = contacts.length >= MIN_CONTACT_TARGET
-  const shareUnlocked = isActionable && (!relayMode || relayReady)
-  const remainingContacts = Math.max(0, MIN_CONTACT_TARGET - contacts.length)
+  const activeContacts = shareMode === SHARE_MODES.SMS ? smsContacts : emailContacts
+  const activeCount = activeContacts.length
+  const canCompose = isActionable && activeCount > 0
   const baseShareUrl = `${window.location.origin}${window.location.pathname}`
   const sharePreview = buildShareMessage(electionState)
 
@@ -179,78 +276,91 @@ function App() {
       return
     }
 
-    setPhotoFile(null)
-    setContacts([])
     setContactInput('')
     setInputFeedback('')
     setShareFeedback('')
-    setActiveRelayMethod(null)
     setLocationFeedback('')
     setIsLocating(false)
     setIsPickingContacts(false)
+    setAlternatePrompt(null)
   }, [isInformationalOnly])
 
-  async function addContacts(rawEntries) {
-    const nextContacts = [...contacts]
-    const knownValues = new Set(contacts.map((contact) => contact.value))
+  function setContactsForMode(mode, nextContacts) {
+    const sortedContacts = sortContactsByLocality(nextContacts)
+
+    if (mode === SHARE_MODES.SMS) {
+      setSmsContacts(sortedContacts)
+      return
+    }
+
+    setEmailContacts(sortedContacts)
+  }
+
+  function addContacts(rawEntries, mode = shareMode) {
+    const expectedKind = getModeKind(mode)
+    const currentContacts = mode === SHARE_MODES.SMS ? smsContacts : emailContacts
+    const nextContacts = [...currentContacts]
+    const knownValues = new Set(currentContacts.map((contact) => contact.value))
     const result = {
       added: 0,
       invalid: 0,
+      addedContacts: [],
     }
 
-    try {
-      for (const entry of rawEntries) {
-        const detail =
-          typeof entry === 'string'
-            ? { raw: entry, locality: 'unknown', name: '' }
-            : entry
+    rawEntries.forEach((entry) => {
+      const detail =
+        typeof entry === 'string'
+          ? { raw: entry, locality: 'unknown', name: '' }
+          : entry
 
-        const normalized = normalizeContact(detail.raw)
+      const normalized = normalizeContact(detail.raw)
 
-        if (!normalized || normalized.kind !== 'phone') {
-          result.invalid += 1
-          continue
-        }
-
-        if (knownValues.has(normalized.value)) {
-          continue
-        }
-
-        knownValues.add(normalized.value)
-        nextContacts.push({
-          kind: normalized.kind,
-          locality: detail.locality || 'unknown',
-          masked: maskContact(normalized.value, normalized.kind),
-          name: detail.name || '',
-          value: normalized.value,
-        })
-        result.added += 1
+      if (!normalized || normalized.kind !== expectedKind) {
+        result.invalid += 1
+        return
       }
 
-      if (result.added > 0) {
-        setContacts(sortContactsByLocality(nextContacts))
-        setShareFeedback('')
+      if (knownValues.has(normalized.value)) {
+        return
       }
 
-      setInputFeedback(getContactMessage(result))
-      return result
-    } catch {
-      setInputFeedback('Open this over HTTPS to build the challenge.')
+      knownValues.add(normalized.value)
+      const storedContact = buildStoredContact(normalized, detail)
+
+      nextContacts.push(storedContact)
+      result.addedContacts.push(storedContact)
+      result.added += 1
+    })
+
+    if (result.added > 0) {
+      setContactsForMode(mode, nextContacts)
+      setShareFeedback('')
+      setInputFeedback(`Added ${result.added}.`)
       return result
     }
+
+    setInputFeedback(
+      result.invalid > 0 ? getModeInvalidMessage(mode) : 'No new people added.',
+    )
+    return result
   }
 
-  async function handleManualAdd(event) {
+  function handleManualAdd(event) {
     event.preventDefault()
+    setAlternatePrompt(null)
 
     const rawEntries = splitContactInput(contactInput)
 
     if (rawEntries.length === 0) {
-      setInputFeedback('Paste or type at least 3 phone numbers.')
+      setInputFeedback(
+        shareMode === SHARE_MODES.SMS
+          ? 'Paste or type phone numbers.'
+          : 'Paste or type email addresses.',
+      )
       return
     }
 
-    const result = await addContacts(rawEntries)
+    const result = addContacts(rawEntries, shareMode)
 
     if (result.added > 0) {
       setContactInput('')
@@ -266,7 +376,7 @@ function App() {
     setInputFeedback('')
 
     try {
-      const properties = ['name', 'tel']
+      const properties = ['name', 'tel', 'email']
 
       if (pickerSupportsAddress) {
         properties.push('address')
@@ -277,27 +387,74 @@ function App() {
       })
 
       const entries = []
+      const alternateEntries = []
+      const alternateMode = getAlternateMode(shareMode)
 
       selectedContacts.forEach((contact) => {
-        const candidates = [...(contact.tel || [])].filter(Boolean)
+        const phoneCandidates = [...(contact.tel || [])].filter(Boolean)
+        const emailCandidates = [...(contact.email || [])].filter(Boolean)
+        const primaryCandidate =
+          shareMode === SHARE_MODES.SMS ? phoneCandidates[0] : emailCandidates[0]
+        const alternateCandidate =
+          shareMode === SHARE_MODES.SMS ? emailCandidates[0] : phoneCandidates[0]
 
-        if (candidates.length === 0) {
+        const locality = isLikelyIl9Contact(contact) ? 'local' : 'unknown'
+        const name = getPickedContactName(contact)
+
+        if (primaryCandidate) {
+          entries.push({
+            raw: primaryCandidate,
+            locality,
+            name,
+          })
           return
         }
 
-        const locality = isLikelyIl9Contact(contact) ? 'local' : 'unknown'
-
-        entries.push({
-          raw: candidates[0],
-          locality,
-          name: getPickedContactName(contact),
-        })
+        if (alternateCandidate) {
+          alternateEntries.push({
+            raw: alternateCandidate,
+            locality,
+            name,
+          })
+        }
       })
 
-      if (entries.length === 0) {
-        setInputFeedback('No phone numbers came back from that pick.')
+      const primaryResult =
+        entries.length > 0
+          ? addContacts(entries, shareMode)
+          : { added: 0, invalid: 0, addedContacts: [] }
+      const alternateResult =
+        alternateEntries.length > 0
+          ? addContacts(alternateEntries, alternateMode)
+          : { added: 0, invalid: 0, addedContacts: [] }
+
+      if (primaryResult.added === 0 && alternateResult.added === 0) {
+        setAlternatePrompt(null)
+        setInputFeedback('No usable phone numbers or emails came back from that pick.')
       } else {
-        await addContacts(entries)
+        const feedbackParts = []
+
+        if (primaryResult.added > 0) {
+          feedbackParts.push(`Added ${primaryResult.added}.`)
+        }
+
+        if (alternateResult.added > 0) {
+          feedbackParts.push(
+            shareMode === SHARE_MODES.EMAIL
+              ? `${alternateResult.added} had no email. Text them instead.`
+              : `${alternateResult.added} had no phone number. Email them instead.`,
+          )
+        }
+
+        setAlternatePrompt(
+          alternateResult.added > 0
+            ? {
+                mode: alternateMode,
+                contacts: alternateResult.addedContacts,
+              }
+            : null,
+        )
+        setInputFeedback(feedbackParts.join(' '))
       }
     } catch (error) {
       if (error?.name !== 'AbortError') {
@@ -309,28 +466,18 @@ function App() {
   }
 
   function handleRemoveContact(value) {
-    setContacts(sortContactsByLocality(contacts.filter((contact) => contact.value !== value)))
+    setContactsForMode(
+      shareMode,
+      activeContacts.filter((contact) => contact.value !== value),
+    )
   }
 
-  function handlePhotoChange(event) {
-    const nextFile = event.target.files?.[0] ?? null
-    setPhotoFile(nextFile)
-  }
-
-  function handleClearPhoto() {
-    setPhotoFile(null)
-  }
-
-  function finalizeRelayShare(nextMessage) {
-    setContacts([])
+  function handleSelectMode(mode) {
+    setShareMode(mode)
     setContactInput('')
     setInputFeedback('')
-    setShareFeedback(nextMessage)
-    setActiveRelayMethod(null)
-  }
-
-  function finalizeSimpleShare(nextMessage) {
-    setShareFeedback(nextMessage)
+    setShareFeedback('')
+    setAlternatePrompt(null)
   }
 
   function getShareArtifacts() {
@@ -338,117 +485,72 @@ function App() {
 
     return {
       publicText,
-      textWithoutLink: buildShareMessage(electionState),
     }
   }
 
-  async function handleNativeShare() {
-    setActiveRelayMethod(null)
-    setInputFeedback('')
-    const shareArtifacts = getShareArtifacts()
-    const sharePayload = {
-      title: 'The IL-9 Vote Challenge',
-      text: shareArtifacts.textWithoutLink,
-      url: baseShareUrl,
-    }
-
-    if (photoFile && typeof navigator.canShare === 'function') {
-      try {
-        if (navigator.canShare({ files: [photoFile] })) {
-          sharePayload.files = [photoFile]
-        }
-      } catch {
-        // Ignore file share capability checks that fail on unsupported browsers.
-      }
-    }
-
-    try {
-      await navigator.share(sharePayload)
-      finalizeSimpleShare('Share sheet ready.')
-    } catch (error) {
-      if (error?.name !== 'AbortError') {
-        setShareFeedback('Native share did not finish.')
-      }
-    }
-  }
-
-  function activateRelayMethod(method) {
-    setActiveRelayMethod(method)
-    setInputFeedback('')
-    setShareFeedback('')
-
-    if (contacts.length === 0 && canUseContactPicker && mobileDevice) {
-      void handleContactPicker()
-    }
-  }
-
-  function handleSmsShare() {
-    activateRelayMethod(RELAY_METHODS.SMS)
-
-    if (!relayReady) {
-      setShareFeedback('Add at least 3 people first.')
+  async function openSmsCompose(contactsToUse = smsContacts) {
+    if (contactsToUse.length === 0) {
+      setShareMode(SHARE_MODES.SMS)
+      setShareFeedback('Add at least one phone number first.')
       return
     }
 
     const shareArtifacts = getShareArtifacts()
-    const recipients = contacts.map((contact) => contact.value).join(',')
-    const separator = isIosDevice() ? '&' : '?'
+    const recipients = contactsToUse.map((contact) => contact.value).join(',')
+    const separator = iosDevice ? '&' : '?'
     const smsUrl = `sms:${recipients}${separator}body=${encodeURIComponent(shareArtifacts.publicText)}`
+    const textLabel = getModeButtonLabel(SHARE_MODES.SMS, iosDevice)
 
-    finalizeRelayShare('Text ready.')
+    let copied = false
+
+    try {
+      await copyTextToClipboard(shareArtifacts.publicText)
+      copied = true
+    } catch {
+      copied = false
+    }
+
+    setShareFeedback(copied ? `${textLabel} opened. Message copied too.` : `${textLabel} opened.`)
     openExternalUrl(smsUrl, true)
   }
 
-  function handleWhatsAppShare() {
-    activateRelayMethod(RELAY_METHODS.WHATSAPP)
-
-    if (!relayReady) {
-      setShareFeedback('Add at least 3 people first.')
+  function openEmailCompose(contactsToUse = emailContacts) {
+    if (contactsToUse.length === 0) {
+      setShareMode(SHARE_MODES.EMAIL)
+      setShareFeedback('Add at least one email first.')
       return
     }
 
     const shareArtifacts = getShareArtifacts()
-    const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareArtifacts.publicText)}`
+    const recipients = contactsToUse.map((contact) => contact.value).join(',')
+    const emailUrl = `mailto:?bcc=${encodeURIComponent(recipients)}&subject=${encodeURIComponent('The IL-9 Vote Challenge')}&body=${encodeURIComponent(shareArtifacts.publicText)}`
 
-    finalizeRelayShare('WhatsApp ready.')
-    openExternalUrl(whatsappUrl)
+    setShareFeedback('Email opened.')
+    openExternalUrl(emailUrl, true)
   }
 
-  function handleFacebookShare() {
-    setActiveRelayMethod(null)
-    setInputFeedback('')
-    const facebookUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(baseShareUrl)}`
+  function handlePrimaryShare() {
+    setAlternatePrompt(null)
 
-    finalizeSimpleShare('Facebook opened.')
-    openExternalUrl(facebookUrl)
-  }
-
-  async function handleInstagramShare() {
-    setActiveRelayMethod(null)
-    setInputFeedback('')
-    const shareArtifacts = getShareArtifacts()
-
-    try {
-      await copyTextToClipboard(shareArtifacts.publicText)
-      finalizeSimpleShare('Caption copied. Instagram opened.')
-    } catch {
-      finalizeSimpleShare('Instagram opened.')
+    if (shareMode === SHARE_MODES.SMS) {
+      openSmsCompose()
+      return
     }
 
-    openExternalUrl('https://www.instagram.com/')
+    openEmailCompose()
   }
 
-  async function handleCopyShare() {
-    setActiveRelayMethod(null)
-    setInputFeedback('')
-    const shareArtifacts = getShareArtifacts()
-
-    try {
-      await copyTextToClipboard(shareArtifacts.publicText)
-      finalizeSimpleShare('Copied. Send it.')
-    } catch {
-      setShareFeedback('Copy failed on this browser.')
+  function handleAlternateShare() {
+    if (!alternatePrompt) {
+      return
     }
+
+    if (alternatePrompt.mode === SHARE_MODES.SMS) {
+      openSmsCompose(alternatePrompt.contacts)
+      return
+    }
+
+    openEmailCompose(alternatePrompt.contacts)
   }
 
   function handleLocate() {
@@ -540,7 +642,7 @@ function App() {
             ))}
             <div className="hero-badge accent-badge">
               <span>Fast mode</span>
-              <strong>{isActionable ? 'Vote. Pic. Challenge friends.' : 'Official info only.'}</strong>
+              <strong>{isActionable ? 'Pick Email or Text. Add people. Open it.' : 'Official info only.'}</strong>
             </div>
           </div>
         </section>
@@ -549,59 +651,23 @@ function App() {
           {isActionable ? (
             <article className="surface challenge-card" id="challenge">
               <div className="section-head">
-                <p className="panel-kicker">Fast challenge</p>
-                <h2>Vote, post a pic, challenge friends.</h2>
+                <p className="panel-kicker">Quick send</p>
+                <h2>Pick Email or Text. Add people. Open it.</h2>
                 <p>{PARTICIPATION_PROMPT}</p>
+                <p className="tiny-note">Text opens one group text. Email uses BCC.</p>
               </div>
 
               <div className="quick-steps">
-                <span>1. Vote</span>
-                <span>2. Pic</span>
-                <span>3. Challenge friends</span>
-              </div>
-
-              <div className="upload-block">
-                <label className="upload-dropzone" htmlFor="challenge-photo">
-                  {photoPreviewUrl ? (
-                    <img
-                      className="photo-preview"
-                      src={photoPreviewUrl}
-                      alt="Selected voting photo preview"
-                    />
-                  ) : (
-                    <div className="upload-copy">
-                      <strong>Add a pic</strong>
-                      <span>Vote pic, sticker, or thumbs-up.</span>
-                    </div>
-                  )}
-                </label>
-
-                <input
-                  id="challenge-photo"
-                  className="visually-hidden"
-                  type="file"
-                  accept="image/*"
-                  capture="user"
-                  onChange={handlePhotoChange}
-                />
-
-                <div className="upload-actions">
-                  <label className="button button-secondary" htmlFor="challenge-photo">
-                    {photoFile ? 'Swap pic' : 'Take or upload'}
-                  </label>
-                  {photoFile && (
-                    <button className="button button-ghost" type="button" onClick={handleClearPhoto}>
-                      Remove
-                    </button>
-                  )}
-                </div>
+                <span>1. Pick a lane</span>
+                <span>2. Add people</span>
+                <span>3. Open it</span>
               </div>
 
               <div className="share-panel">
                 <div className="share-head">
                   <p className="panel-kicker">Share</p>
-                  <span className={`count-pill ${shareUnlocked ? 'is-ready' : ''}`}>
-                    {relayMode ? (relayReady ? 'Ready' : 'Need 3+') : 'Pick one'}
+                  <span className={`count-pill ${canCompose ? 'is-ready' : ''}`}>
+                    {activeCount > 0 ? `${activeCount} added` : 'Add people'}
                   </span>
                 </div>
 
@@ -610,171 +676,137 @@ function App() {
                 <div className="share-actions">
                   {mobileDevice ? (
                     <>
-                      {canUseNativeShare && (
-                        <button
-                          className="button button-primary"
-                          type="button"
-                          onClick={handleNativeShare}
-                        >
-                          Share
-                        </button>
-                      )}
                       <button
-                        className={`button ${activeRelayMethod === RELAY_METHODS.SMS ? 'button-primary' : 'button-secondary'}`}
+                        className={`button ${shareMode === SHARE_MODES.SMS ? 'button-primary' : 'button-secondary'}`}
                         type="button"
-                        onClick={() => activateRelayMethod(RELAY_METHODS.SMS)}
+                        onClick={() => handleSelectMode(SHARE_MODES.SMS)}
                       >
-                        Text
+                        {getModeButtonLabel(SHARE_MODES.SMS, iosDevice)}
                       </button>
                       <button
-                        className={`button ${activeRelayMethod === RELAY_METHODS.WHATSAPP ? 'button-primary' : 'button-secondary'}`}
+                        className={`button ${shareMode === SHARE_MODES.EMAIL ? 'button-primary' : 'button-secondary'}`}
                         type="button"
-                        onClick={() => activateRelayMethod(RELAY_METHODS.WHATSAPP)}
+                        onClick={() => handleSelectMode(SHARE_MODES.EMAIL)}
                       >
-                        WhatsApp
-                      </button>
-                      <button
-                        className="button button-secondary"
-                        type="button"
-                        onClick={handleInstagramShare}
-                      >
-                        Instagram
-                      </button>
-                      <button
-                        className="button button-secondary"
-                        type="button"
-                        onClick={handleFacebookShare}
-                      >
-                        Facebook
-                      </button>
-                      <button className="button button-ghost" type="button" onClick={handleCopyShare}>
-                        Copy
+                        Email
                       </button>
                     </>
                   ) : (
                     <>
                       <button
-                        className="button button-secondary"
+                        className={`button ${shareMode === SHARE_MODES.EMAIL ? 'button-primary' : 'button-secondary'}`}
                         type="button"
-                        onClick={handleFacebookShare}
+                        onClick={() => handleSelectMode(SHARE_MODES.EMAIL)}
                       >
-                        Facebook
+                        Email
                       </button>
                       <button
-                        className="button button-secondary"
+                        className={`button ${shareMode === SHARE_MODES.SMS ? 'button-primary' : 'button-secondary'}`}
                         type="button"
-                        onClick={handleInstagramShare}
+                        onClick={() => handleSelectMode(SHARE_MODES.SMS)}
                       >
-                        Instagram
-                      </button>
-                      <button
-                        className={`button ${activeRelayMethod === RELAY_METHODS.WHATSAPP ? 'button-primary' : 'button-secondary'}`}
-                        type="button"
-                        onClick={() => activateRelayMethod(RELAY_METHODS.WHATSAPP)}
-                      >
-                        WhatsApp
-                      </button>
-                      <button
-                        className={`button ${activeRelayMethod === RELAY_METHODS.SMS ? 'button-primary' : 'button-secondary'}`}
-                        type="button"
-                        onClick={() => activateRelayMethod(RELAY_METHODS.SMS)}
-                      >
-                        Text
-                      </button>
-                      <button className="button button-ghost" type="button" onClick={handleCopyShare}>
-                        Copy
+                        {getModeButtonLabel(SHARE_MODES.SMS, iosDevice)}
                       </button>
                     </>
                   )}
                 </div>
 
-                {relayMode && (
-                  <div className="relay-panel">
-                    <form className="contact-form" onSubmit={handleManualAdd}>
-                      <label className="visually-hidden" htmlFor="contact-entry">
-                        Add phone numbers
-                      </label>
-                      <textarea
-                        id="contact-entry"
-                        className="paste-input"
-                        rows="3"
-                        autoComplete="off"
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        value={contactInput}
-                        onChange={(event) => setContactInput(event.target.value)}
-                        placeholder={'Paste 3+ phone numbers\nOne per line, comma, or semicolon'}
-                      />
-                      <button className="button button-secondary" type="submit">
-                        Add numbers
-                      </button>
-                    </form>
-
-                    <div className="picker-row">
-                      {canUseContactPicker && (
-                        <button
-                          className="button button-ghost"
-                          type="button"
-                          onClick={handleContactPicker}
-                          disabled={isPickingContacts}
-                        >
-                          {isPickingContacts ? 'Opening…' : 'Search phone'}
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="challenge-progress">
-                      <span className={`count-pill ${relayReady ? 'is-ready' : ''}`}>
-                        {relayReady ? `${contacts.length} picked` : `${contacts.length}/${MIN_CONTACT_TARGET}`}
-                      </span>
-                      <span className="progress-text">
-                        {relayReady ? 'Ready to open' : `Add ${remainingContacts} more`}
-                      </span>
-                    </div>
-
-                    {inputFeedback && <p className="inline-note">{inputFeedback}</p>}
-
-                    <ul className="contact-list">
-                      {contacts.length === 0 ? (
-                        <li className="empty-state">No people yet. Add a few and go.</li>
-                      ) : (
-                        contacts.map((contact) => (
-                          <li className="contact-item" key={contact.value}>
-                            <div className="contact-copy">
-                              <div className="contact-line">
-                                {contact.name && <strong>{contact.name}</strong>}
-                                {contact.locality === 'local' && (
-                                  <span className="contact-flag">IL-9</span>
-                                )}
-                              </div>
-                              <span>{contact.masked}</span>
-                            </div>
-                            <button
-                              className="button button-inline"
-                              type="button"
-                              onClick={() => handleRemoveContact(contact.value)}
-                            >
-                              Remove
-                            </button>
-                          </li>
-                        ))
-                      )}
-                    </ul>
-
-                    <button
-                      className="button button-primary"
-                      type="button"
-                      onClick={
-                        activeRelayMethod === RELAY_METHODS.SMS
-                          ? handleSmsShare
-                          : handleWhatsAppShare
-                      }
-                      disabled={!relayReady}
-                    >
-                      {activeRelayMethod === RELAY_METHODS.SMS ? 'Open text' : 'Open WhatsApp'}
+                <div className="relay-panel">
+                  <form className="contact-form" onSubmit={handleManualAdd}>
+                    <label className="visually-hidden" htmlFor="contact-entry">
+                      {getModeInputLabel(shareMode)}
+                    </label>
+                    <textarea
+                      id="contact-entry"
+                      className="paste-input"
+                      rows="3"
+                      autoComplete="off"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      value={contactInput}
+                      onChange={(event) => setContactInput(event.target.value)}
+                      placeholder={getModePlaceholder(shareMode)}
+                    />
+                    <button className="button button-secondary" type="submit">
+                      {shareMode === SHARE_MODES.SMS ? 'Add numbers' : 'Add emails'}
                     </button>
+                  </form>
+
+                  <div className="picker-row">
+                    {canUseContactPicker && (
+                      <button
+                        className="button button-ghost"
+                        type="button"
+                        onClick={handleContactPicker}
+                        disabled={isPickingContacts}
+                      >
+                        {isPickingContacts ? 'Opening…' : getModePickerLabel(shareMode)}
+                      </button>
+                    )}
                   </div>
-                )}
+
+                  {inputFeedback && <p className="inline-note">{inputFeedback}</p>}
+
+                  <ul className="contact-list">
+                    {activeContacts.length === 0 ? (
+                      <li className="empty-state">{getModeEmptyState(shareMode)}</li>
+                    ) : (
+                      activeContacts.map((contact) => (
+                        <li className="contact-item" key={contact.value}>
+                          <div className="contact-copy">
+                            <div className="contact-line">
+                              {contact.name && <strong>{contact.name}</strong>}
+                              {contact.locality === 'local' && (
+                                <span className="contact-flag">IL-9</span>
+                              )}
+                            </div>
+                            <span>{contact.masked}</span>
+                          </div>
+                          <button
+                            className="button button-inline"
+                            type="button"
+                            onClick={() => handleRemoveContact(contact.value)}
+                          >
+                            Remove
+                          </button>
+                        </li>
+                      ))
+                    )}
+                  </ul>
+
+                  <button
+                    className="button button-primary"
+                    type="button"
+                    onClick={handlePrimaryShare}
+                    disabled={!canCompose}
+                  >
+                    {getModeOpenLabel(shareMode, iosDevice)}
+                  </button>
+
+                  {alternatePrompt && (
+                    <div className="alternate-prompt">
+                      <p className="tiny-note">
+                        {shareMode === SHARE_MODES.EMAIL
+                          ? `${alternatePrompt.contacts.length} picked contact${alternatePrompt.contacts.length === 1 ? '' : 's'} had no email.`
+                          : `${alternatePrompt.contacts.length} picked contact${alternatePrompt.contacts.length === 1 ? '' : 's'} had no phone number.`}{' '}
+                        {alternatePrompt.mode === SHARE_MODES.SMS
+                          ? 'Send them a group text instead.'
+                          : 'Send them a BCC email instead.'}
+                      </p>
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={handleAlternateShare}
+                      >
+                        {alternatePrompt.mode === SHARE_MODES.SMS
+                          ? iosDevice
+                            ? 'Text them instead'
+                            : 'Open text instead'
+                          : 'Email them instead'}
+                      </button>
+                    </div>
+                  )}
+                </div>
 
                 {shareFeedback && <p className="inline-note success-note">{shareFeedback}</p>}
               </div>
@@ -828,14 +860,13 @@ function App() {
             <div className="statewide-row">
               {electionConfig.statewideLinks.map((link) => (
                 <a
-                  className="inline-resource"
+                  className="statewide-link"
                   href={link.href}
                   key={link.href}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  <strong>{link.label}</strong>
-                  <span>{link.description}</span>
+                  {link.label}
                 </a>
               ))}
             </div>

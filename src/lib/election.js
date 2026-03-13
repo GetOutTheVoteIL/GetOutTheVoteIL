@@ -192,7 +192,7 @@ export function getStateContent(state, config = electionConfig) {
       return {
         badge: 'Polls open today',
         headline: 'Election Day. Polls open this morning.',
-        lead: 'Vote. Snap a pic. Challenge friends.',
+        lead: 'It is especially important for our community to vote in this cycle.',
         mapQuery: 'polling place',
         mapButtonLabel: 'Find my spot',
         statusCards: [
@@ -215,7 +215,7 @@ export function getStateContent(state, config = electionConfig) {
       return {
         badge: 'Polls are open',
         headline: 'Vote today before 7:00 p.m.',
-        lead: 'Vote. Snap a pic. Challenge friends.',
+        lead: 'It is especially important for our community to vote in this cycle.',
         mapQuery: 'polling place',
         mapButtonLabel: 'Find my spot',
         statusCards: [
@@ -262,7 +262,7 @@ export function getStateContent(state, config = electionConfig) {
       return {
         badge: 'Early voting is open',
         headline: 'Vote early now. Election Day is Tuesday, March 17.',
-        lead: 'Vote. Snap a pic. Challenge friends.',
+        lead: 'It is especially important for our community to vote in this cycle.',
         mapQuery: 'early voting',
         mapButtonLabel: 'Find early voting',
         statusCards: [
